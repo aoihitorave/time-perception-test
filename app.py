@@ -3,25 +3,32 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.font_manager as fm
 import os
+import urllib.request
 
-# --- フォント設定 (Streamlit Cloud対応 / 日本語化) ---
-def configure_japanese_font():
-    # Noto Sans JPフォントをダウンロードして設定
-    font_url = 'https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP-Regular.ttf'
-    font_path = 'NotoSansJP-Regular.ttf'
+# --- フォント設定 (安定版) ---
+def configure_font():
+    # 読みやすさと安定性を重視し、Google FontsからNoto Sans JPを取得
+    font_filename = 'NotoSansJP-Regular.ttf'
+    # 安定したURLに変更
+    font_url = 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP-Regular.ttf'
     
-    if not os.path.exists(font_path):
-        import urllib.request
+    # フォントファイルがない場合のみダウンロード
+    if not os.path.exists(font_filename):
         try:
-            urllib.request.urlretrieve(font_url, font_path)
-        except Exception as e:
-            st.error(f"Font download failed: {e}")
-            return
+            urllib.request.urlretrieve(font_url, font_filename)
+        except Exception:
+            # 万が一DL失敗してもアプリを止めない
+            pass
 
-    fm.fontManager.addfont(font_path)
-    plt.rcParams['font.family'] = 'Noto Sans JP'
+    # フォントがDLできていれば適用、なければデフォルト(DejaVu Sans等)を使用
+    if os.path.exists(font_filename):
+        fm.fontManager.addfont(font_filename)
+        plt.rcParams['font.family'] = 'Noto Sans JP'
+    else:
+        # フォールバック（文字化け回避のため英語優先にするが、極力DL成功を目指す）
+        plt.rcParams['font.family'] = 'sans-serif'
 
-configure_japanese_font()
+configure_font()
 # --------------------------------------------------
 
 # ページ設定
@@ -30,27 +37,54 @@ st.set_page_config(page_title="Time Perception Analysis", layout="centered")
 # --- スタイル調整 (CSS) ---
 st.markdown("""
 <style>
-    h1 { font-family: 'Helvetica Neue', Arial, sans-serif; font-weight: 700; color: #2C3E50; }
-    h2, h3 { font-family: 'Helvetica Neue', Arial, sans-serif; color: #34495E; }
-    .stMetric { background-color: #F8F9F9; padding: 15px; border-radius: 5px; border: 1px solid #E5E8E8; }
-    .disclaimer { font-size: 0.8rem; color: #7F8C8D; background-color: #F2F3F4; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+    /* 全体のフォント定義 */
+    body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; }
+    
+    /* ヘッダー周り */
+    h1 { color: #2C3E50; font-weight: 700; border-bottom: 2px solid #EAECEE; padding-bottom: 10px; }
+    h2, h3 { color: #34495E; }
+    
+    /* 免責事項のデザイン改善 */
+    .disclaimer-box {
+        background-color: #262730; /* Streamlitのダークモードに馴染む色 */
+        color: #FAFAFA;
+        padding: 15px;
+        border-left: 5px solid #FF4B4B; /* アクセントカラー */
+        border-radius: 4px;
+        margin-bottom: 25px;
+        font-size: 0.85rem;
+        line-height: 1.5;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .disclaimer-title {
+        font-weight: bold;
+        color: #FF4B4B;
+        display: block;
+        margin-bottom: 5px;
+    }
+    
+    /* Expanderの見た目調整 */
+    .streamlit-expanderHeader {
+        font-weight: 600;
+        color: #2C3E50;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 免責事項 (Legal/Ethical Disclaimer) ---
 st.markdown("""
-<div class="disclaimer">
-    <strong>【免責事項・本ツールの位置づけ】</strong><br>
+<div class="disclaimer-box">
+    <span class="disclaimer-title">【免責事項・本ツールの位置づけ】</span>
     本アプリケーションは、書籍『YOUR TIME ユア・タイム』（鈴木 祐 著）で紹介されている理論を参考に、
     独自の見解を付加し一定の母集団向けの提供を目的として構築された<strong>非公式のプロトタイプ</strong>です。<br>
-    設問ロジックや診断結果は本アプリケーション向けに独自に再構成されており、原著の正式な診断とは異なります。
+    設問ロジックや診断結果は本アプリケーション向けに独自に再構成されており、原著の正式な診断とは異なります。<br>
     また、本結果は医学的な診断を提供するものではなく、各人にマッチする可能性の高い時間術の仮説を提示するものです。
 </div>
 """, unsafe_allow_html=True)
 
 # --- タイトル ---
 st.title("Time Perception Analysis")
-st.markdown("認知科学的アプローチによる時間感覚の特性分析")
+st.caption("認知科学的アプローチによる時間感覚の特性分析")
 
 # --- 設問データ ---
 questions = {
@@ -90,7 +124,7 @@ option_values = {options[0]: 1, options[1]: 2, options[2]: 3, options[3]: 4, opt
 
 with st.form("diagnosis_form"):
     st.header("Section 1: Future Perspective")
-    st.caption("未来に対する「予期」の傾向を分析します")
+    st.info("未来に対する「予期」の傾向を分析します")
     
     st.subheader("Part A: Intensity (予期の濃さ)")
     q1_score = st.radio(questions["expected_intensity"][0], options, horizontal=True)
@@ -108,7 +142,7 @@ with st.form("diagnosis_form"):
     q10_score = st.radio(questions["expected_quantity"][4], options, horizontal=True)
 
     st.header("Section 2: Past Perspective")
-    st.caption("過去に対する「想起」の傾向を分析します")
+    st.info("過去に対する「想起」の傾向を分析します")
     
     st.subheader("Part C: Accuracy (想起の正確性)")
     q11_score = st.radio(questions["recalled_accuracy"][0], options, horizontal=True)
@@ -125,7 +159,7 @@ with st.form("diagnosis_form"):
     q19_score = st.radio(questions["recalled_positivity"][3], options, horizontal=True)
     q20_score = st.radio(questions["recalled_positivity"][4], options, horizontal=True)
 
-    submitted = st.form_submit_button("Run Analysis", type="primary")
+    submitted = st.form_submit_button("Run Analysis (分析実行)", type="primary")
 
 # --- 集計と結果表示ロジック ---
 if submitted:
@@ -137,6 +171,7 @@ if submitted:
     st.markdown("---")
     st.header("Analysis Result")
 
+    # 不要な四角を消すため、st.metricではなくカラム内に直接テキストと数値を配置
     def plot_matrix(x_score, y_score, x_label, y_label, title, x_min_text, x_max_text, y_min_text, y_max_text):
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.set_xlim(0, 25)
@@ -145,18 +180,19 @@ if submitted:
         ax.axhline(y=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
         ax.scatter(x_score, y_score, color='#E74C3C', s=250, zorder=5, edgecolors='white', linewidth=2)
         
-        ax.set_xlabel(x_label, fontsize=12, color='#34495E')
-        ax.set_ylabel(y_label, fontsize=12, color='#34495E')
-        ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50')
+        # フォントサイズ調整
+        ax.set_xlabel(x_label, fontsize=11, color='#34495E')
+        ax.set_ylabel(y_label, fontsize=11, color='#34495E')
+        ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50', pad=15)
         
-        # テキスト配置
-        plt.text(1, 12.5, y_min_text, ha='left', va='center', rotation=90, color='#7F8C8D', fontsize=10)
-        plt.text(1, 13, y_max_text, ha='left', va='center', rotation=90, color='#7F8C8D', fontsize=10)
-        plt.text(12.5, 1, x_min_text, ha='center', va='bottom', color='#7F8C8D', fontsize=10)
-        plt.text(13, 1, x_max_text, ha='center', va='bottom', color='#7F8C8D', fontsize=10)
+        # 象限ラベル
+        plt.text(1, 12.5, y_min_text, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
+        plt.text(1, 13, y_max_text, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
+        plt.text(12.5, 1, x_min_text, ha='center', va='bottom', color='#95A5A6', fontsize=10)
+        plt.text(13, 1, x_max_text, ha='center', va='bottom', color='#95A5A6', fontsize=10)
 
-        # 背景色分け
-        rect = patches.Rectangle((12.5, 12.5), 12.5, 12.5, linewidth=0, edgecolor='none', facecolor='#ECF0F1', alpha=0.5)
+        # 背景色
+        rect = patches.Rectangle((12.5, 12.5), 12.5, 12.5, linewidth=0, edgecolor='none', facecolor='#F0F2F6', alpha=0.5)
         ax.add_patch(rect)
         
         st.pyplot(fig)
@@ -164,39 +200,39 @@ if submitted:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("#### Future Perspective")
-        st.metric("予期の濃さ (Intensity)", f"{s_exp_int} / 25")
-        st.metric("予期の多さ (Quantity)", f"{s_exp_qty} / 25")
+        st.markdown(f"**Future Perspective (予期)**")
+        st.markdown(f"予期の濃さ: **{s_exp_int}** / 25")
+        st.markdown(f"予期の多さ: **{s_exp_qty}** / 25")
         plot_matrix(
             s_exp_qty, s_exp_int, 
-            "予期の多さ (Quantity)", "予期の濃さ (Intensity)", 
+            "Quantity (多さ)", "Intensity (濃さ)", 
             "Future Matrix", 
-            "少ない", "多い", "薄い", "濃い"
+            "Low (少ない)", "High (多い)", "Weak (薄い)", "Strong (濃い)"
         )
 
     with col2:
-        st.markdown("#### Past Perspective")
-        st.metric("想起の正確性 (Accuracy)", f"{s_rec_acc} / 25")
-        st.metric("想起の肯定度 (Positivity)", f"{s_rec_pos} / 25")
+        st.markdown(f"**Past Perspective (想起)**")
+        st.markdown(f"想起の正確性: **{s_rec_acc}** / 25")
+        st.markdown(f"想起の肯定度: **{s_rec_pos}** / 25")
         plot_matrix(
             s_rec_pos, s_rec_acc, 
-            "肯定度 (Positivity)", "正確性 (Accuracy)", 
+            "Positivity (肯定度)", "Accuracy (正確性)", 
             "Past Matrix", 
-            "否定的", "肯定的", "誤り", "正しい"
+            "Negative (否定的)", "Positive (肯定的)", "Error (誤り)", "Correct (正しい)"
         )
 
     # --- Recommendations Logic ---
     st.markdown("---")
     st.header("Strategic Recommendations")
-    st.info("スコアに基づき、推奨される「認知ハック」と「具体的なアクション」を提示します。")
+    st.info("あなたのタイプに基づき推奨されるアプローチです。各項目をクリックして詳細を確認してください。")
 
     recommendations = []
 
     # 1. 予期が薄すぎる
     if s_exp_int <= 12:
         recommendations.append({
-            "title": "Strategy: Future Connection (未来との接続強化)",
-            "problem": "「今」に集中するあまり、未来の利益を過小評価し、先延ばしが発生しやすい傾向があります。",
+            "title": "Strategy 1: Future Connection (未来との接続強化)",
+            "subtitle": "「今」に集中するあまり、未来の利益を過小評価し、先延ばしが発生しやすい傾向への対策",
             "methods": [
                 {
                     "name": "Time Boxing (タイムボクシング)",
@@ -229,8 +265,8 @@ if submitted:
     # 2. 予期が濃すぎる
     if s_exp_int >= 13:
         recommendations.append({
-            "title": "Strategy: Anxiety Management (予期不安の管理)",
-            "problem": "未来のリスクを過大評価し、プレッシャーや不安を感じやすい傾向があります。休息が苦手なタイプです。",
+            "title": "Strategy 2: Anxiety Management (予期不安の管理)",
+            "subtitle": "未来のリスクを過大評価し、プレッシャーや不安を感じやすい傾向（休息下手）への対策",
             "methods": [
                 {
                     "name": "Pre-commitment (プレコミットメント)",
@@ -258,8 +294,8 @@ if submitted:
     # 3. 予期が多すぎる
     if s_exp_qty >= 13:
         recommendations.append({
-            "title": "Strategy: Bandwidth Optimization (脳内帯域の解放)",
-            "problem": "マルチタスク傾向があり、常に「何かに追われている」感覚によるパフォーマンス低下が懸念されます。",
+            "title": "Strategy 3: Bandwidth Optimization (脳内帯域の解放)",
+            "subtitle": "マルチタスク傾向があり、常に「何かに追われている」感覚への対策",
             "methods": [
                 {
                     "name": "SSC Exercise (選択と放棄)",
@@ -287,8 +323,8 @@ if submitted:
     # 4. 想起の誤りが大きい
     if s_rec_acc <= 12:
         recommendations.append({
-            "title": "Strategy: Calibration (見積もりの補正)",
-            "problem": "過去の所要時間を過小評価し、計画錯誤（楽観的な計画倒れ）に陥りやすい傾向があります。",
+            "title": "Strategy 4: Calibration (見積もりの補正)",
+            "subtitle": "過去の所要時間を過小評価し、計画錯誤（楽観的な計画倒れ）に陥りやすい傾向への対策",
             "methods": [
                 {
                     "name": "Time Log (タイムログ)",
@@ -311,8 +347,8 @@ if submitted:
     # 5. 想起が肯定的すぎる（楽観バイアス）
     if s_rec_pos >= 13 and s_rec_acc <= 12:
         recommendations.append({
-            "title": "Strategy: Reality Check (現実的なリスク評価)",
-            "problem": "根拠のない自信がリスクの見落としに繋がっている可能性があります。",
+            "title": "Strategy 5: Reality Check (現実的なリスク評価)",
+            "subtitle": "根拠のない自信がリスクの見落としに繋がっている傾向への対策",
             "methods": [
                 {
                     "name": "Time Log Advance (タイムログ・アドバンス分析)",
@@ -340,8 +376,8 @@ if submitted:
     # 6. 想起が否定的すぎる
     if s_rec_pos <= 12:
         recommendations.append({
-            "title": "Strategy: Self-Efficacy (自己効力感の向上)",
-            "problem": "過去の失敗体験にとらわれ、新たな挑戦へのハードルが高くなっている状態です。",
+            "title": "Strategy 6: Self-Efficacy (自己効力感の向上)",
+            "subtitle": "過去の失敗体験にとらわれ、新たな挑戦へのハードルが高くなっている状態への対策",
             "methods": [
                 {
                     "name": "Negative Simulation Check (ネガティブ想起改善シート)",
@@ -366,14 +402,11 @@ if submitted:
             ]
         })
     
-    # 7. 体質改善（時間不足・追われる感覚の根本解決） - 全員向けオプション
-    # 特定のスコア条件なしに、すべての人に役立つ可能性があるため、Expandersとして下部に配置するか、
-    # あるいはスコアが悪かった場合に追加表示する形をとる。今回は「予期多」や「予期濃」の補助として表示。
-    
+    # 7. 体質改善（共通オプション）
     if s_exp_qty >= 13 or s_exp_int >= 13:
          recommendations.append({
-            "title": "Strategy: Fundamental Improvement (時間感覚の体質改善)",
-            "problem": "効率化を求めても時間が足りない、常に時間に追われる感覚が消えない場合の根本対策です。",
+            "title": "Strategy 7: Fundamental Improvement (時間感覚の体質改善)",
+            "subtitle": "効率化を求めても時間が足りない、常に時間に追われる感覚が消えない場合の根本対策",
             "methods": [
                  {
                     "name": "Ikigai Chart (生きがいチャート)",
@@ -403,20 +436,21 @@ if submitted:
             ]
          })
 
-
-    # 結果表示ループ
+    # 結果表示ループ (折りたたみ・階層化)
     if not recommendations:
         st.success("Balance is optimal. 現在の時間感覚バランスは非常に良好です。")
     else:
         for rec in recommendations:
-            with st.container():
-                st.markdown(f"### {rec['title']}")
-                st.markdown(f"**課題:** {rec['problem']}")
+            # 大項目（Strategy）のExpander。初期は閉じた状態。
+            with st.expander(f"{rec['title']}", expanded=False):
+                st.markdown(f"**【対象】** {rec['subtitle']}")
                 
+                # 中身の技法リスト
                 for method in rec['methods']:
-                    with st.expander(f"実践技法: {method['name']}", expanded=True):
-                        st.markdown(f"**How-To (やり方):** {method['how_to']}")
-                        st.markdown(f"**Tips (コツ):** {method['tips']}")
+                    st.markdown("---")
+                    st.markdown(f"#### 🛠 {method['name']}")
+                    st.markdown(f"**How-To (やり方):**  \n{method['how_to']}")
+                    st.info(f"💡 **Tips (コツ):** {method['tips']}")
 
     st.markdown("---")
     st.caption("Reference: 『YOUR TIME ユア・タイム』(鈴木 祐 著)")
