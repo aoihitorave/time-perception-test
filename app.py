@@ -29,28 +29,24 @@ st.markdown("""
         margin-bottom: 5px;
     }
     
-    /* 診断サマリボックス */
+    /* 診断サマリボックス（ダークモード対応版） */
     .summary-box {
-        background-color: #F0F2F6;
+        background-color: rgba(255, 75, 75, 0.1); /* 赤色の薄い透過背景 */
         padding: 20px;
         border-radius: 10px;
         margin-bottom: 20px;
-        border: 1px solid #E6E9EF;
+        border: 1px solid rgba(255, 75, 75, 0.2); /* 枠線も透過 */
     }
     .summary-title {
         font-size: 1.2rem;
         font-weight: bold;
-        color: #2C3E50;
+        color: inherit; /* 親要素（Streamlitのテーマ色）を継承 */
         margin-bottom: 10px;
+        opacity: 0.9;
     }
-    .summary-tag {
-        background-color: #FF4B4B;
-        color: white;
-        padding: 5px 10px;
-        border-radius: 15px;
-        font-size: 0.9rem;
-        font-weight: bold;
-        margin-right: 10px;
+    .summary-text {
+        color: inherit; /* 親要素（Streamlitのテーマ色）を継承 */
+        opacity: 0.8;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -168,17 +164,17 @@ if submitted:
     if s_rec_pos <= 12: summary_past.append("否定的 (Negative)")
     if s_rec_pos >= 13: summary_past.append("肯定的 (Positive)")
 
-    # サマリ表示
+    # サマリ表示 (配色修正済み)
     st.markdown(f"""
     <div class="summary-box">
         <div class="summary-title">📊 診断サマリ</div>
-        <p><strong>Future Perspective (未来):</strong> {', '.join(summary_future)}</p>
-        <p><strong>Past Perspective (過去):</strong> {', '.join(summary_past)}</p>
+        <p class="summary-text"><strong>Future Perspective (未来):</strong> {', '.join(summary_future)}</p>
+        <p class="summary-text"><strong>Past Perspective (過去):</strong> {', '.join(summary_past)}</p>
     </div>
     """, unsafe_allow_html=True)
 
 
-    # --- チャート描画 (英語表記のみにして文字化け回避) ---
+    # --- チャート描画 ---
     def plot_matrix(x_score, y_score, x_label, y_label, title, x_min, x_max, y_min, y_max):
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.set_xlim(0, 25)
@@ -191,7 +187,6 @@ if submitted:
         ax.set_ylabel(y_label, fontsize=11, color='#34495E')
         ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50', pad=15)
         
-        # 英語ラベル (文字化けしない)
         plt.text(1, 12.5, y_min, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
         plt.text(1, 13, y_max, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
         plt.text(12.5, 1, x_min, ha='center', va='bottom', color='#95A5A6', fontsize=10)
@@ -366,15 +361,13 @@ if submitted:
             ]
         })
 
-    # 結果表示ループ (折りたたみ・階層化)
+    # 結果表示ループ
     if not recommendations:
         st.success("Balance is optimal. 現在の時間感覚バランスは非常に良好です。今の習慣を継続してください。")
     else:
         for rec in recommendations:
             with st.expander(f"{rec['title']}", expanded=False):
-                # Reasonを追加
                 st.info(f"💡 **Reason (なぜこの対策か):** \n{rec['reason']}")
-                
                 for method in rec['methods']:
                     st.markdown("---")
                     st.markdown(f"#### 🛠 {method['name']}")
