@@ -229,7 +229,7 @@ grades = [
 ]
 
 # --- フォーム作成 ---
-options = ["全く当てはまらない (1)", "あまり当てはまらない (2)", "どちらともいえない (3)", "やや当てはまる (4)", "完全に当てはまる (5)"]
+options = ["全く当てはまらない", "あまり当てはまらない", "どちらともいえない", "やや当てはまる", "完全に当てはまる"]
 option_values = {options[0]: 1, options[1]: 2, options[2]: 3, options[3]: 4, options[4]: 5}
 
 with st.form("diagnosis_form"):
@@ -777,3 +777,4 @@ elif show_restored_results:
 
 st.markdown("---")
 st.caption("Developed for Dirbato Co., Ltd.")
+
