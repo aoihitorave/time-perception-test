@@ -10,8 +10,9 @@ import numpy as np
 import io
 import base64
 
-# --- Google Sheets連携用 ---
-from streamlit_gsheets import GSheetsConnection
+# --- Google Sheets連携用 (修正版) ---
+from google.oauth2.service_account import Credentials
+import gspread
 
 # --- フォント設定 (安定版) ---
 def configure_font():
@@ -91,24 +92,41 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Google Sheets接続関数 ---
+# --- Google Sheets接続関数 (修正版: gspread使用) ---
 @st.cache_resource
-def get_gsheets_connection():
+def get_gspread_client():
     """Google Sheets接続を取得"""
     try:
-        return st.connection("gsheets", type=GSheetsConnection)
-    except Exception:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
+        )
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.warning(f"Google Sheets接続エラー: {e}")
         return None
 
 def load_all_responses():
     """全回答データを読み込み"""
     try:
-        conn = get_gsheets_connection()
-        if conn is None:
+        gc = get_gspread_client()
+        if gc is None:
             return pd.DataFrame()
-        df = conn.read(worksheet="responses", usecols=list(range(8)), ttl=60)
-        if df is not None and not df.empty:
-            return df.dropna(how='all')
+        
+        sheet_url = st.secrets["app"]["spreadsheet_url"]
+        worksheet_name = st.secrets["app"]["worksheet_name"]
+        
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.worksheet(worksheet_name)
+        
+        # 全データを取得
+        data = ws.get_all_records()
+        if data:
+            return pd.DataFrame(data)
         return pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
@@ -116,15 +134,36 @@ def load_all_responses():
 def save_response(user_data: dict):
     """回答データを保存"""
     try:
-        conn = get_gsheets_connection()
-        if conn is None:
+        gc = get_gspread_client()
+        if gc is None:
             return False
-        existing_df = load_all_responses()
-        new_row = pd.DataFrame([user_data])
-        updated_df = pd.concat([existing_df, new_row], ignore_index=True)
-        conn.update(worksheet="responses", data=updated_df)
+        
+        sheet_url = st.secrets["app"]["spreadsheet_url"]
+        worksheet_name = st.secrets["app"]["worksheet_name"]
+        
+        sh = gc.open_by_url(sheet_url)
+        ws = sh.worksheet(worksheet_name)
+        
+        # ヘッダー行がなければ追加
+        existing_data = ws.get_all_values()
+        if not existing_data:
+            headers = ["timestamp", "nickname", "grade", "s_exp_int", "s_exp_qty", "s_rec_acc", "s_rec_pos"]
+            ws.append_row(headers)
+        
+        # データを行として追加
+        row = [
+            user_data.get("timestamp", ""),
+            user_data.get("nickname", ""),
+            user_data.get("grade", ""),
+            user_data.get("s_exp_int", 0),
+            user_data.get("s_exp_qty", 0),
+            user_data.get("s_rec_acc", 0),
+            user_data.get("s_rec_pos", 0),
+        ]
+        ws.append_row(row)
         return True
     except Exception as e:
+        st.error(f"データ保存エラー: {e}")
         return False
 
 def calculate_percentile(value, all_values):
@@ -135,7 +174,7 @@ def calculate_percentile(value, all_values):
 
 def generate_result_url(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos):
     """結果再表示用のURLを生成"""
-    base_url = st.secrets.get("app_url", "https://your-app.streamlit.app")
+    base_url = st.secrets.get("app", {}).get("app_url", "https://your-app.streamlit.app")
     return f"{base_url}?ei={s_exp_int}&eq={s_exp_qty}&ra={s_rec_acc}&rp={s_rec_pos}"
 
 def generate_summary_text(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, summary_future, summary_past):
@@ -153,6 +192,135 @@ def generate_summary_text(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, summary_fu
 ・想起の肯定度: {s_rec_pos}/25
 ━━━━━━━━━━━━━━━━━━━━━━"""
     return text
+
+# --- グラフ画像ダウンロード（サマリ付き版）---
+def generate_result_image_with_summary(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, summary_future, summary_past):
+    """サマリ付きの結果画像を生成"""
+    
+    # フィギュアを作成（3行構成：サマリ、Future Matrix、Past Matrix）
+    fig = plt.figure(figsize=(10, 14))
+    
+    # GridSpecで領域を分割
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 2, 2], hspace=0.3, wspace=0.3)
+    
+    # --- サマリセクション（上段全体） ---
+    ax_summary = fig.add_subplot(gs[0, :])
+    ax_summary.axis('off')
+    
+    # サマリテキストを作成
+    summary_title = "Time Perception Analysis Result"
+    summary_content = f"""
+Future Perspective (未来): {', '.join(summary_future)}
+Past Perspective (過去): {', '.join(summary_past)}
+
+Score Details:
+  予期の濃さ (Intensity): {s_exp_int}/25    予期の量 (Quantity): {s_exp_qty}/25
+  想起の正確性 (Accuracy): {s_rec_acc}/25    想起の肯定度 (Positivity): {s_rec_pos}/25
+"""
+    
+    # タイトル
+    ax_summary.text(0.5, 0.85, summary_title, transform=ax_summary.transAxes,
+                   fontsize=16, fontweight='bold', ha='center', va='top',
+                   color='#2C3E50')
+    
+    # サマリ内容（背景ボックス付き）
+    bbox_props = dict(boxstyle="round,pad=0.5", facecolor='#F8F9FA', edgecolor='#E74C3C', linewidth=2)
+    ax_summary.text(0.5, 0.45, summary_content, transform=ax_summary.transAxes,
+                   fontsize=10, ha='center', va='center',
+                   color='#34495E', bbox=bbox_props,
+                   family='monospace', linespacing=1.5)
+    
+    # --- Future Matrix（中段左） ---
+    ax_future = fig.add_subplot(gs[1, 0])
+    plot_matrix_on_ax(ax_future, s_exp_qty, s_exp_int, 
+                     "Quantity (Expected)", "Intensity (Expected)",
+                     "Future Matrix", "Low", "High", "Weak", "Strong")
+    
+    # --- Past Matrix（中段右） ---
+    ax_past = fig.add_subplot(gs[1, 1])
+    plot_matrix_on_ax(ax_past, s_rec_pos, s_rec_acc,
+                     "Positivity (Recalled)", "Accuracy (Recalled)",
+                     "Past Matrix", "Negative", "Positive", "Low", "High")
+    
+    # --- 推奨戦略のサマリ（下段全体） ---
+    ax_strategy = fig.add_subplot(gs[2, :])
+    ax_strategy.axis('off')
+    
+    # 推奨戦略を判定
+    strategies = []
+    if s_exp_int <= 12:
+        strategies.append("🔮 Future Connection (未来との接続強化)")
+    if s_exp_int >= 13:
+        strategies.append("🧘 Pressure Release (プレッシャーの解放)")
+    if s_exp_qty >= 13:
+        strategies.append("🧹 Mental Declutter (思考の整理整頓)")
+    if s_exp_qty <= 12:
+        strategies.append("🎯 Deep Focus (深い集中の活用)")
+    if s_rec_acc <= 12:
+        strategies.append("📐 Estimation Calibration (見積もりの校正)")
+    if s_rec_pos >= 13 and s_rec_acc <= 12:
+        strategies.append("🔍 Optimism Calibration (楽観の校正)")
+    if s_rec_pos <= 12:
+        strategies.append("💪 Confidence Building (自信の構築)")
+    
+    # 肯定的メッセージ
+    positives = []
+    if s_rec_acc >= 13:
+        positives.append("✅ 想起の正確性：良好")
+    if s_rec_pos >= 13 and s_rec_acc >= 13:
+        positives.append("🌟 想起のバランス：理想的")
+    
+    strategy_title = "Recommended Strategies"
+    strategy_text = "\n".join(strategies) if strategies else "🎉 Excellent Balance! 現在の時間感覚バランスは非常に良好です。"
+    
+    if positives:
+        strategy_text += "\n\n" + "\n".join(positives)
+    
+    ax_strategy.text(0.5, 0.9, strategy_title, transform=ax_strategy.transAxes,
+                    fontsize=14, fontweight='bold', ha='center', va='top',
+                    color='#2C3E50')
+    
+    bbox_props_strategy = dict(boxstyle="round,pad=0.5", facecolor='#E8F6E8', edgecolor='#27AE60', linewidth=2)
+    ax_strategy.text(0.5, 0.5, strategy_text, transform=ax_strategy.transAxes,
+                    fontsize=11, ha='center', va='center',
+                    color='#2C3E50', bbox=bbox_props_strategy,
+                    linespacing=1.8)
+    
+    # フッター
+    ax_strategy.text(0.5, 0.05, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Dirbato Co., Ltd.",
+                    transform=ax_strategy.transAxes, fontsize=8, ha='center', va='bottom',
+                    color='#95A5A6')
+    
+    plt.tight_layout()
+    
+    # バッファに保存
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+    buf.seek(0)
+    plt.close(fig)
+    
+    return buf
+
+def plot_matrix_on_ax(ax, x_score, y_score, x_label, y_label, title, x_min, x_max, y_min, y_max):
+    """既存のAxesにマトリクスを描画"""
+    ax.set_xlim(0, 25)
+    ax.set_ylim(0, 25)
+    ax.axvline(x=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
+    ax.axhline(y=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
+    
+    ax.scatter(x_score, y_score, color='#E74C3C', s=250, zorder=5, edgecolors='white', linewidth=2)
+    
+    ax.set_xlabel(x_label, fontsize=11, color='#34495E')
+    ax.set_ylabel(y_label, fontsize=11, color='#34495E')
+    ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50', pad=15)
+    
+    ax.text(1, 6, y_min, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
+    ax.text(1, 19, y_max, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
+    ax.text(6, 1, x_min, ha='center', va='bottom', color='#95A5A6', fontsize=10)
+    ax.text(19, 1, x_max, ha='center', va='bottom', color='#95A5A6', fontsize=10)
+    
+    rect = patches.Rectangle((12.5, 12.5), 12.5, 12.5, linewidth=0, edgecolor='none', facecolor='#F0F2F6', alpha=0.5)
+    ax.add_patch(rect)
 
 # --- 免責事項 ---
 st.markdown("""
@@ -178,7 +346,6 @@ if restored_from_url:
     </div>
     """, unsafe_allow_html=True)
     
-    # 復元された結果を表示するためのフラグ
     show_restored_results = True
 else:
     show_restored_results = False
@@ -301,13 +468,13 @@ def display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, is_restored=Fals
         if not all_responses.empty and len(all_responses) >= 5:
             total_responses = len(all_responses)
             if 's_exp_int' in all_responses.columns:
-                percentiles['exp_int'] = calculate_percentile(s_exp_int, all_responses['s_exp_int'].dropna().values)
+                percentiles['exp_int'] = calculate_percentile(s_exp_int, pd.to_numeric(all_responses['s_exp_int'], errors='coerce').dropna().values)
             if 's_exp_qty' in all_responses.columns:
-                percentiles['exp_qty'] = calculate_percentile(s_exp_qty, all_responses['s_exp_qty'].dropna().values)
+                percentiles['exp_qty'] = calculate_percentile(s_exp_qty, pd.to_numeric(all_responses['s_exp_qty'], errors='coerce').dropna().values)
             if 's_rec_acc' in all_responses.columns:
-                percentiles['rec_acc'] = calculate_percentile(s_rec_acc, all_responses['s_rec_acc'].dropna().values)
+                percentiles['rec_acc'] = calculate_percentile(s_rec_acc, pd.to_numeric(all_responses['s_rec_acc'], errors='coerce').dropna().values)
             if 's_rec_pos' in all_responses.columns:
-                percentiles['rec_pos'] = calculate_percentile(s_rec_pos, all_responses['s_rec_pos'].dropna().values)
+                percentiles['rec_pos'] = calculate_percentile(s_rec_pos, pd.to_numeric(all_responses['s_rec_pos'], errors='coerce').dropna().values)
 
     # --- 診断サマリの判定 ---
     summary_future = []
@@ -333,6 +500,8 @@ def display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, is_restored=Fals
     # --- 全体比較（パーセンタイル）の表示 ---
     if percentiles and total_responses >= 5:
         def get_position_text(pct):
+            if pct is None:
+                return "N/A"
             if pct >= 50:
                 return f"上位 {100 - pct:.0f}%"
             else:
@@ -350,22 +519,22 @@ def display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, is_restored=Fals
                 <tr>
                     <td style="padding:8px;">予期の濃さ</td>
                     <td style="text-align:center; padding:8px;">{s_exp_int}/25</td>
-                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('exp_int', 50))}</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('exp_int'))}</td>
                 </tr>
                 <tr>
                     <td style="padding:8px;">予期の量</td>
                     <td style="text-align:center; padding:8px;">{s_exp_qty}/25</td>
-                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('exp_qty', 50))}</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('exp_qty'))}</td>
                 </tr>
                 <tr>
                     <td style="padding:8px;">想起の正確性</td>
                     <td style="text-align:center; padding:8px;">{s_rec_acc}/25</td>
-                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('rec_acc', 50))}</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('rec_acc'))}</td>
                 </tr>
                 <tr>
                     <td style="padding:8px;">想起の肯定度</td>
                     <td style="text-align:center; padding:8px;">{s_rec_pos}/25</td>
-                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('rec_pos', 50))}</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('rec_pos'))}</td>
                 </tr>
             </table>
             <p style="font-size:0.8rem; margin-top:10px; opacity:0.7;">※「上位30%」＝上から30%の位置にいることを意味します</p>
@@ -402,10 +571,10 @@ def display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, is_restored=Fals
         
         return fig
 
-    all_exp_qty = all_responses['s_exp_qty'].dropna().values if not all_responses.empty and 's_exp_qty' in all_responses.columns else None
-    all_exp_int = all_responses['s_exp_int'].dropna().values if not all_responses.empty and 's_exp_int' in all_responses.columns else None
-    all_rec_pos = all_responses['s_rec_pos'].dropna().values if not all_responses.empty and 's_rec_pos' in all_responses.columns else None
-    all_rec_acc = all_responses['s_rec_acc'].dropna().values if not all_responses.empty and 's_rec_acc' in all_responses.columns else None
+    all_exp_qty = pd.to_numeric(all_responses['s_exp_qty'], errors='coerce').dropna().values if not all_responses.empty and 's_exp_qty' in all_responses.columns else None
+    all_exp_int = pd.to_numeric(all_responses['s_exp_int'], errors='coerce').dropna().values if not all_responses.empty and 's_exp_int' in all_responses.columns else None
+    all_rec_pos = pd.to_numeric(all_responses['s_rec_pos'], errors='coerce').dropna().values if not all_responses.empty and 's_rec_pos' in all_responses.columns else None
+    all_rec_acc = pd.to_numeric(all_responses['s_rec_acc'], errors='coerce').dropna().values if not all_responses.empty and 's_rec_acc' in all_responses.columns else None
 
     col1, col2 = st.columns(2)
     with col1:
@@ -438,43 +607,15 @@ def display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, is_restored=Fals
         st.text_area("📋 テキストサマリ", summary_text, height=200, help="コピーしてSlackやメモアプリに貼り付けられます")
     
     with col_save2:
-        # グラフを画像としてダウンロード
-        fig_combined, axes = plt.subplots(1, 2, figsize=(12, 6))
-        
-        for ax, (x_score, y_score, x_label, y_label, title, x_min, x_max, y_min, y_max) in zip(
-            axes,
-            [
-                (s_exp_qty, s_exp_int, "Quantity", "Intensity", "Future Matrix", "Low", "High", "Weak", "Strong"),
-                (s_rec_pos, s_rec_acc, "Positivity", "Accuracy", "Past Matrix", "Negative", "Positive", "Low", "High")
-            ]
-        ):
-            ax.set_xlim(0, 25)
-            ax.set_ylim(0, 25)
-            ax.axvline(x=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
-            ax.axhline(y=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
-            ax.scatter(x_score, y_score, color='#E74C3C', s=250, zorder=5, edgecolors='white', linewidth=2)
-            ax.set_xlabel(x_label, fontsize=11, color='#34495E')
-            ax.set_ylabel(y_label, fontsize=11, color='#34495E')
-            ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50', pad=15)
-            ax.text(1, 6, y_min, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
-            ax.text(1, 19, y_max, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
-            ax.text(6, 1, x_min, ha='center', va='bottom', color='#95A5A6', fontsize=10)
-            ax.text(19, 1, x_max, ha='center', va='bottom', color='#95A5A6', fontsize=10)
-            rect = patches.Rectangle((12.5, 12.5), 12.5, 12.5, linewidth=0, edgecolor='none', facecolor='#F0F2F6', alpha=0.5)
-            ax.add_patch(rect)
-        
-        plt.tight_layout()
-        
-        buf = io.BytesIO()
-        fig_combined.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
-        buf.seek(0)
-        plt.close(fig_combined)
+        # グラフを画像としてダウンロード（サマリ付き版）
+        buf = generate_result_image_with_summary(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, summary_future, summary_past)
         
         st.download_button(
-            label="📊 グラフをダウンロード (PNG)",
+            label="📊 結果画像をダウンロード (PNG)",
             data=buf,
-            file_name=f"time_perception_result_{datetime.now().strftime('%Y%m%d')}.png",
-            mime="image/png"
+            file_name=f"time_perception_result_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+            mime="image/png",
+            help="サマリ・グラフ・推奨戦略を含む画像をダウンロードできます"
         )
     
     with col_save3:
@@ -772,9 +913,8 @@ elif show_restored_results:
         restored_scores['s_rec_acc'],
         restored_scores['s_rec_pos'],
         is_restored=True,
-        show_comparison=True  # 復元時は比較表示可能
+        show_comparison=True
     )
 
 st.markdown("---")
 st.caption("Developed for Dirbato Co., Ltd.")
-
