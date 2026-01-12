@@ -1,2 +1,6 @@
 streamlit
+streamlit-gsheets
 matplotlib
+pandas
+numpy
+gspread
