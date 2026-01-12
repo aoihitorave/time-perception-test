@@ -4,6 +4,14 @@ import matplotlib.patches as patches
 import matplotlib.font_manager as fm
 import os
 import urllib.request
+from datetime import datetime
+import pandas as pd
+import numpy as np
+import io
+import base64
+
+# --- Google Sheets連携用 ---
+from streamlit_gsheets import GSheetsConnection
 
 # --- フォント設定 (安定版) ---
 def configure_font():
@@ -24,6 +32,23 @@ configure_font()
 
 # --- ページ設定 ---
 st.set_page_config(page_title="Time Perception Analysis", layout="centered")
+
+# --- URLパラメータから結果を復元 ---
+query_params = st.query_params
+restored_from_url = False
+restored_scores = {}
+
+if all(k in query_params for k in ['ei', 'eq', 'ra', 'rp']):
+    try:
+        restored_scores = {
+            's_exp_int': int(query_params['ei']),
+            's_exp_qty': int(query_params['eq']),
+            's_rec_acc': int(query_params['ra']),
+            's_rec_pos': int(query_params['rp'])
+        }
+        restored_from_url = True
+    except (ValueError, TypeError):
+        pass
 
 # --- スタイル調整 (CSS) ---
 st.markdown("""
@@ -47,8 +72,87 @@ st.markdown("""
         border-radius: 10px; margin-bottom: 20px;
         border: 1px solid rgba(0, 200, 83, 0.3);
     }
+    .percentile-box {
+        background-color: rgba(100, 100, 255, 0.1); padding: 20px;
+        border-radius: 10px; margin-bottom: 20px;
+        border: 1px solid rgba(100, 100, 255, 0.3);
+    }
+    .percentile-title { font-size: 1.1rem; font-weight: bold; margin-bottom: 10px; }
+    .restored-notice {
+        background-color: rgba(255, 193, 7, 0.2); padding: 15px;
+        border-radius: 10px; margin-bottom: 20px;
+        border: 1px solid rgba(255, 193, 7, 0.5);
+    }
+    .save-section {
+        background-color: rgba(100, 100, 100, 0.1); padding: 15px;
+        border-radius: 10px; margin: 20px 0;
+        border: 1px solid rgba(100, 100, 100, 0.2);
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# --- Google Sheets接続関数 ---
+@st.cache_resource
+def get_gsheets_connection():
+    """Google Sheets接続を取得"""
+    try:
+        return st.connection("gsheets", type=GSheetsConnection)
+    except Exception:
+        return None
+
+def load_all_responses():
+    """全回答データを読み込み"""
+    try:
+        conn = get_gsheets_connection()
+        if conn is None:
+            return pd.DataFrame()
+        df = conn.read(worksheet="responses", usecols=list(range(8)), ttl=60)
+        if df is not None and not df.empty:
+            return df.dropna(how='all')
+        return pd.DataFrame()
+    except Exception as e:
+        return pd.DataFrame()
+
+def save_response(user_data: dict):
+    """回答データを保存"""
+    try:
+        conn = get_gsheets_connection()
+        if conn is None:
+            return False
+        existing_df = load_all_responses()
+        new_row = pd.DataFrame([user_data])
+        updated_df = pd.concat([existing_df, new_row], ignore_index=True)
+        conn.update(worksheet="responses", data=updated_df)
+        return True
+    except Exception as e:
+        return False
+
+def calculate_percentile(value, all_values):
+    """パーセンタイルを計算"""
+    if len(all_values) == 0:
+        return None
+    return (np.sum(all_values < value) / len(all_values)) * 100
+
+def generate_result_url(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos):
+    """結果再表示用のURLを生成"""
+    base_url = st.secrets.get("app_url", "https://your-app.streamlit.app")
+    return f"{base_url}?ei={s_exp_int}&eq={s_exp_qty}&ra={s_rec_acc}&rp={s_rec_pos}"
+
+def generate_summary_text(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, summary_future, summary_past):
+    """結果サマリのテキストを生成"""
+    text = f"""【Time Perception Analysis 結果】
+━━━━━━━━━━━━━━━━━━━━━━
+📊 診断サマリ
+・Future (未来): {', '.join(summary_future)}
+・Past (過去): {', '.join(summary_past)}
+
+📈 スコア詳細
+・予期の濃さ: {s_exp_int}/25
+・予期の量: {s_exp_qty}/25
+・想起の正確性: {s_rec_acc}/25
+・想起の肯定度: {s_rec_pos}/25
+━━━━━━━━━━━━━━━━━━━━━━"""
+    return text
 
 # --- 免責事項 ---
 st.markdown("""
@@ -65,7 +169,21 @@ st.markdown("""
 st.title("Time Perception Analysis")
 st.caption("認知科学とデータに基づく、コンサルタントのための時間感覚最適化")
 
-# --- 設問データ（改善版） ---
+# --- URLから復元された場合の表示 ---
+if restored_from_url:
+    st.markdown("""
+    <div class="restored-notice">
+        <strong>📋 保存された結果を表示しています</strong><br>
+        新しく診断を受ける場合は、下のフォームから回答してください。
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 復元された結果を表示するためのフラグ
+    show_restored_results = True
+else:
+    show_restored_results = False
+
+# --- 設問データ ---
 questions = {
     "expected_intensity": [
         "Q1. 今の行動が、5年後や10年後の未来にどう繋がるかをイメージするのが得意だ。",
@@ -97,58 +215,99 @@ questions = {
     ]
 }
 
+# --- 職位選択肢 ---
+grades = [
+    "回答しない",
+    "アナリスト",
+    "コンサルタント",
+    "シニアコンサルタント",
+    "マネージャー",
+    "アーキテクト",
+    "シニアマネージャー",
+    "シニアアーキテクト",
+    "パートナー"
+]
+
 # --- フォーム作成 ---
 options = ["全く当てはまらない (1)", "あまり当てはまらない (2)", "どちらともいえない (3)", "やや当てはまる (4)", "完全に当てはまる (5)"]
 option_values = {options[0]: 1, options[1]: 2, options[2]: 3, options[3]: 4, options[4]: 5}
 
 with st.form("diagnosis_form"):
+    # --- 設問 ---
     st.header("Section 1: Future Perspective")
     st.info("未来に対する「予期」の傾向を分析します")
     
     st.subheader("Part A: Intensity (予期の濃さ)")
-    q1_score = st.radio(questions["expected_intensity"][0], options, horizontal=True)
-    q2_score = st.radio(questions["expected_intensity"][1], options, horizontal=True)
-    q3_score = st.radio(questions["expected_intensity"][2], options, horizontal=True)
-    q4_score = st.radio(questions["expected_intensity"][3], options, horizontal=True)
-    q5_score = st.radio(questions["expected_intensity"][4], options, horizontal=True)
+    q1_score = st.radio(questions["expected_intensity"][0], options, horizontal=True, key="q1")
+    q2_score = st.radio(questions["expected_intensity"][1], options, horizontal=True, key="q2")
+    q3_score = st.radio(questions["expected_intensity"][2], options, horizontal=True, key="q3")
+    q4_score = st.radio(questions["expected_intensity"][3], options, horizontal=True, key="q4")
+    q5_score = st.radio(questions["expected_intensity"][4], options, horizontal=True, key="q5")
     
     st.markdown("---")
     st.subheader("Part B: Quantity (予期の量)")
-    q6_score = st.radio(questions["expected_quantity"][0], options, horizontal=True)
-    q7_score = st.radio(questions["expected_quantity"][1], options, horizontal=True)
-    q8_score = st.radio(questions["expected_quantity"][2], options, horizontal=True)
-    q9_score = st.radio(questions["expected_quantity"][3], options, horizontal=True)
-    q10_score = st.radio(questions["expected_quantity"][4], options, horizontal=True)
+    q6_score = st.radio(questions["expected_quantity"][0], options, horizontal=True, key="q6")
+    q7_score = st.radio(questions["expected_quantity"][1], options, horizontal=True, key="q7")
+    q8_score = st.radio(questions["expected_quantity"][2], options, horizontal=True, key="q8")
+    q9_score = st.radio(questions["expected_quantity"][3], options, horizontal=True, key="q9")
+    q10_score = st.radio(questions["expected_quantity"][4], options, horizontal=True, key="q10")
 
     st.header("Section 2: Past Perspective")
     st.info("過去に対する「想起」の傾向を分析します")
     
     st.subheader("Part C: Accuracy (想起の正確性)")
-    q11_score = st.radio(questions["recalled_accuracy"][0], options, horizontal=True)
-    q12_score = st.radio(questions["recalled_accuracy"][1], options, horizontal=True)
-    q13_score = st.radio(questions["recalled_accuracy"][2], options, horizontal=True)
-    q14_score = st.radio(questions["recalled_accuracy"][3], options, horizontal=True)
-    q15_score = st.radio(questions["recalled_accuracy"][4], options, horizontal=True)
+    q11_score = st.radio(questions["recalled_accuracy"][0], options, horizontal=True, key="q11")
+    q12_score = st.radio(questions["recalled_accuracy"][1], options, horizontal=True, key="q12")
+    q13_score = st.radio(questions["recalled_accuracy"][2], options, horizontal=True, key="q13")
+    q14_score = st.radio(questions["recalled_accuracy"][3], options, horizontal=True, key="q14")
+    q15_score = st.radio(questions["recalled_accuracy"][4], options, horizontal=True, key="q15")
 
     st.markdown("---")
     st.subheader("Part D: Positivity (想起の肯定度)")
-    q16_score = st.radio(questions["recalled_positivity"][0], options, horizontal=True)
-    q17_score = st.radio(questions["recalled_positivity"][1], options, horizontal=True)
-    q18_score = st.radio(questions["recalled_positivity"][2], options, horizontal=True)
-    q19_score = st.radio(questions["recalled_positivity"][3], options, horizontal=True)
-    q20_score = st.radio(questions["recalled_positivity"][4], options, horizontal=True)
+    q16_score = st.radio(questions["recalled_positivity"][0], options, horizontal=True, key="q16")
+    q17_score = st.radio(questions["recalled_positivity"][1], options, horizontal=True, key="q17")
+    q18_score = st.radio(questions["recalled_positivity"][2], options, horizontal=True, key="q18")
+    q19_score = st.radio(questions["recalled_positivity"][3], options, horizontal=True, key="q19")
+    q20_score = st.radio(questions["recalled_positivity"][4], options, horizontal=True, key="q20")
+
+    # --- 属性情報・同意 ---
+    st.markdown("---")
+    st.header("オプション設定")
+    
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        user_nickname = st.text_input("ニックネーム（任意）", placeholder="例：タナカ", help="結果の識別用です。空欄でも構いません。")
+    with col_opt2:
+        user_grade = st.selectbox("職位（任意）", grades, help="匿名での傾向分析に使用します。")
+    
+    data_consent = st.checkbox(
+        "回答結果を匿名で蓄積し、全体傾向の比較表示に使用することに同意します",
+        help="同意しない場合も診断結果は表示されますが、データは保存されず、全体比較も表示されません。"
+    )
 
     submitted = st.form_submit_button("Run Analysis (分析実行)", type="primary")
 
-# --- 集計と結果表示ロジック ---
-if submitted:
-    s_exp_int = sum([option_values[x] for x in [q1_score, q2_score, q3_score, q4_score, q5_score]])
-    s_exp_qty = sum([option_values[x] for x in [q6_score, q7_score, q8_score, q9_score, q10_score]])
-    s_rec_acc = sum([option_values[x] for x in [q11_score, q12_score, q13_score, q14_score, q15_score]])
-    s_rec_pos = sum([option_values[x] for x in [q16_score, q17_score, q18_score, q19_score, q20_score]])
-
-    st.markdown("---")
-    st.header("Analysis Result")
+# --- 結果表示関数 ---
+def display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, is_restored=False, show_comparison=True):
+    """結果を表示する共通関数"""
+    
+    # --- 全体データの読み込みとパーセンタイル計算 ---
+    all_responses = pd.DataFrame()
+    percentiles = {}
+    total_responses = 0
+    
+    if show_comparison:
+        all_responses = load_all_responses()
+        if not all_responses.empty and len(all_responses) >= 5:
+            total_responses = len(all_responses)
+            if 's_exp_int' in all_responses.columns:
+                percentiles['exp_int'] = calculate_percentile(s_exp_int, all_responses['s_exp_int'].dropna().values)
+            if 's_exp_qty' in all_responses.columns:
+                percentiles['exp_qty'] = calculate_percentile(s_exp_qty, all_responses['s_exp_qty'].dropna().values)
+            if 's_rec_acc' in all_responses.columns:
+                percentiles['rec_acc'] = calculate_percentile(s_rec_acc, all_responses['s_rec_acc'].dropna().values)
+            if 's_rec_pos' in all_responses.columns:
+                percentiles['rec_pos'] = calculate_percentile(s_rec_pos, all_responses['s_rec_pos'].dropna().values)
 
     # --- 診断サマリの判定 ---
     summary_future = []
@@ -170,15 +329,64 @@ if submitted:
         <p class="summary-text"><strong>Past Perspective (過去):</strong> {', '.join(summary_past)}</p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # --- 全体比較（パーセンタイル）の表示 ---
+    if percentiles and total_responses >= 5:
+        def get_position_text(pct):
+            if pct >= 50:
+                return f"上位 {100 - pct:.0f}%"
+            else:
+                return f"下位 {100 - pct:.0f}%"
+        
+        st.markdown(f"""
+        <div class="percentile-box">
+            <div class="percentile-title">📈 全体比較（回答者 {total_responses} 名中のあなたの位置）</div>
+            <table style="width:100%; border-collapse: collapse;">
+                <tr style="border-bottom: 1px solid rgba(100,100,255,0.3);">
+                    <th style="text-align:left; padding:8px;">指標</th>
+                    <th style="text-align:center; padding:8px;">スコア</th>
+                    <th style="text-align:center; padding:8px;">位置</th>
+                </tr>
+                <tr>
+                    <td style="padding:8px;">予期の濃さ</td>
+                    <td style="text-align:center; padding:8px;">{s_exp_int}/25</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('exp_int', 50))}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;">予期の量</td>
+                    <td style="text-align:center; padding:8px;">{s_exp_qty}/25</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('exp_qty', 50))}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;">想起の正確性</td>
+                    <td style="text-align:center; padding:8px;">{s_rec_acc}/25</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('rec_acc', 50))}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;">想起の肯定度</td>
+                    <td style="text-align:center; padding:8px;">{s_rec_pos}/25</td>
+                    <td style="text-align:center; padding:8px;">{get_position_text(percentiles.get('rec_pos', 50))}</td>
+                </tr>
+            </table>
+            <p style="font-size:0.8rem; margin-top:10px; opacity:0.7;">※「上位30%」＝上から30%の位置にいることを意味します</p>
+        </div>
+        """, unsafe_allow_html=True)
+    elif show_comparison and total_responses < 5:
+        st.info(f"📊 全体比較は回答者が5名以上になると表示されます（現在: {total_responses}名）")
 
-    # --- チャート描画（軸ラベル位置改善版） ---
-    def plot_matrix(x_score, y_score, x_label, y_label, title, x_min, x_max, y_min, y_max):
+    # --- チャート描画 ---
+    def plot_matrix(x_score, y_score, x_label, y_label, title, x_min, x_max, y_min, y_max, all_x=None, all_y=None):
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.set_xlim(0, 25)
         ax.set_ylim(0, 25)
         ax.axvline(x=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
         ax.axhline(y=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
-        ax.scatter(x_score, y_score, color='#E74C3C', s=250, zorder=5, edgecolors='white', linewidth=2)
+        
+        if all_x is not None and all_y is not None and len(all_x) > 0:
+            ax.scatter(all_x, all_y, color='#BDC3C7', s=50, alpha=0.3, zorder=3, label='他の回答者')
+        
+        ax.scatter(x_score, y_score, color='#E74C3C', s=250, zorder=5, edgecolors='white', linewidth=2, label='あなた')
+        
         ax.set_xlabel(x_label, fontsize=11, color='#34495E')
         ax.set_ylabel(y_label, fontsize=11, color='#34495E')
         ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50', pad=15)
@@ -188,17 +396,93 @@ if submitted:
         plt.text(19, 1, x_max, ha='center', va='bottom', color='#95A5A6', fontsize=10)
         rect = patches.Rectangle((12.5, 12.5), 12.5, 12.5, linewidth=0, edgecolor='none', facecolor='#F0F2F6', alpha=0.5)
         ax.add_patch(rect)
-        st.pyplot(fig)
+        
+        if all_x is not None and len(all_x) > 0:
+            ax.legend(loc='upper right', fontsize=9)
+        
+        return fig
+
+    all_exp_qty = all_responses['s_exp_qty'].dropna().values if not all_responses.empty and 's_exp_qty' in all_responses.columns else None
+    all_exp_int = all_responses['s_exp_int'].dropna().values if not all_responses.empty and 's_exp_int' in all_responses.columns else None
+    all_rec_pos = all_responses['s_rec_pos'].dropna().values if not all_responses.empty and 's_rec_pos' in all_responses.columns else None
+    all_rec_acc = all_responses['s_rec_acc'].dropna().values if not all_responses.empty and 's_rec_acc' in all_responses.columns else None
 
     col1, col2 = st.columns(2)
     with col1:
         st.markdown(f"**Future Perspective (予期)**")
-        plot_matrix(s_exp_qty, s_exp_int, "Quantity (Expected)", "Intensity (Expected)", "Future Matrix", "Low", "High", "Weak", "Strong")
+        fig1 = plot_matrix(s_exp_qty, s_exp_int, "Quantity (Expected)", "Intensity (Expected)", 
+                          "Future Matrix", "Low", "High", "Weak", "Strong",
+                          all_exp_qty, all_exp_int)
+        st.pyplot(fig1)
     with col2:
         st.markdown(f"**Past Perspective (想起)**")
-        plot_matrix(s_rec_pos, s_rec_acc, "Positivity (Recalled)", "Accuracy (Recalled)", "Past Matrix", "Negative", "Positive", "Low", "High")
+        fig2 = plot_matrix(s_rec_pos, s_rec_acc, "Positivity (Recalled)", "Accuracy (Recalled)", 
+                          "Past Matrix", "Negative", "Positive", "Low", "High",
+                          all_rec_pos, all_rec_acc)
+        st.pyplot(fig2)
 
-    # --- Strategic Recommendations Logic（精査版） ---
+    # --- 結果保存セクション ---
+    st.markdown("---")
+    st.markdown("""
+    <div class="save-section">
+        <strong>💾 結果を保存する</strong><br>
+        <span style="font-size:0.9rem; opacity:0.8;">以下の方法で結果を保存できます。再度確認したい場合にご利用ください。</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col_save1, col_save2, col_save3 = st.columns(3)
+    
+    with col_save1:
+        # テキストサマリをクリップボードにコピー
+        summary_text = generate_summary_text(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, summary_future, summary_past)
+        st.text_area("📋 テキストサマリ", summary_text, height=200, help="コピーしてSlackやメモアプリに貼り付けられます")
+    
+    with col_save2:
+        # グラフを画像としてダウンロード
+        fig_combined, axes = plt.subplots(1, 2, figsize=(12, 6))
+        
+        for ax, (x_score, y_score, x_label, y_label, title, x_min, x_max, y_min, y_max) in zip(
+            axes,
+            [
+                (s_exp_qty, s_exp_int, "Quantity", "Intensity", "Future Matrix", "Low", "High", "Weak", "Strong"),
+                (s_rec_pos, s_rec_acc, "Positivity", "Accuracy", "Past Matrix", "Negative", "Positive", "Low", "High")
+            ]
+        ):
+            ax.set_xlim(0, 25)
+            ax.set_ylim(0, 25)
+            ax.axvline(x=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
+            ax.axhline(y=12.5, color='#BDC3C7', linestyle='--', alpha=0.7)
+            ax.scatter(x_score, y_score, color='#E74C3C', s=250, zorder=5, edgecolors='white', linewidth=2)
+            ax.set_xlabel(x_label, fontsize=11, color='#34495E')
+            ax.set_ylabel(y_label, fontsize=11, color='#34495E')
+            ax.set_title(title, fontsize=14, fontweight='bold', color='#2C3E50', pad=15)
+            ax.text(1, 6, y_min, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
+            ax.text(1, 19, y_max, ha='left', va='center', rotation=90, color='#95A5A6', fontsize=10)
+            ax.text(6, 1, x_min, ha='center', va='bottom', color='#95A5A6', fontsize=10)
+            ax.text(19, 1, x_max, ha='center', va='bottom', color='#95A5A6', fontsize=10)
+            rect = patches.Rectangle((12.5, 12.5), 12.5, 12.5, linewidth=0, edgecolor='none', facecolor='#F0F2F6', alpha=0.5)
+            ax.add_patch(rect)
+        
+        plt.tight_layout()
+        
+        buf = io.BytesIO()
+        fig_combined.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+        buf.seek(0)
+        plt.close(fig_combined)
+        
+        st.download_button(
+            label="📊 グラフをダウンロード (PNG)",
+            data=buf,
+            file_name=f"time_perception_result_{datetime.now().strftime('%Y%m%d')}.png",
+            mime="image/png"
+        )
+    
+    with col_save3:
+        # 結果再表示用URL
+        result_url = generate_result_url(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos)
+        st.text_input("🔗 結果URL（ブックマーク用）", result_url, help="このURLをブックマークすると、いつでも結果を見返せます")
+
+    # --- Strategic Recommendations ---
     st.markdown("---")
     st.header("Strategic Recommendations")
     st.info("あなたの時間感覚特性に基づいて導き出された戦略を提示します。各項目をクリックして詳細を確認してください。")
@@ -323,7 +607,7 @@ if submitted:
                 {
                     "name": "タイムログ（実績の記録と比較）",
                     "how_to": "1週間、全ての作業時間を記録し、見積もりとの差を分析してください。\n\n【手順】\n① Toggl, Clockify, またはスプレッドシートを用意\n② 作業を開始したら記録開始、終了したら記録終了\n③ 各タスクに「見積もり時間」も記入\n④ 1週間後、見積もりと実績の差を計算\n⑤ 差が大きかったタスクの傾向を把握（例：会議は常に30%オーバー）\n⑥ 次回から、その傾向を見積もりに反映する",
-                    "tips": "多くの人は「会議」「メール対応」「割り込み」に想像以上の時間を取られています。記録することで初めて、時間の使い方の実態が見えてきます。過去の類似タスクの実績を参照して見積もることで、精度が大幅に向上します。",
+                    "tips": "多くの人は「会議」「メール対応」「割り込み」に想像以上の時間を取られています。記録することで初めて、時間の使い方の実態が見えてきます。",
                     "check": "1週間の記録を見て、「思ったより時間がかかったタスク」のパターンを3つ特定してください。"
                 },
                 {
@@ -335,7 +619,7 @@ if submitted:
             ]
         })
 
-    # 6. 想起の正確性が高い (High Recall Accuracy) - 処方箋不要、肯定メッセージのみ
+    # 6. 想起の正確性が高い (High Recall Accuracy) - 肯定メッセージのみ
     if s_rec_acc >= 13:
         positive_messages.append({
             "title": "✅ 想起の正確性：良好",
@@ -363,7 +647,7 @@ if submitted:
             ]
         })
 
-    # 8. 想起が肯定的で正確性も高い (Positive and High Accuracy) - 処方箋不要、肯定メッセージのみ
+    # 8. 想起が肯定的で正確性も高い (Positive and High Accuracy) - 肯定メッセージのみ
     if s_rec_pos >= 13 and s_rec_acc >= 13:
         positive_messages.append({
             "title": "🌟 想起のバランス：理想的",
@@ -398,8 +682,6 @@ if submitted:
         })
 
     # --- 結果表示 ---
-    
-    # 肯定的メッセージの表示（処方箋不要な領域）
     if positive_messages:
         for msg in positive_messages:
             st.markdown(f"""
@@ -409,7 +691,6 @@ if submitted:
             </div>
             """, unsafe_allow_html=True)
 
-    # 処方箋の表示（折りたたみ、初期状態は閉じる）
     if recommendations:
         for rec in recommendations:
             with st.expander(f"{rec['title']}", expanded=False):
@@ -437,5 +718,62 @@ if submitted:
         if not positive_messages:
             st.success("🎉 Excellent Balance! 現在の時間感覚バランスは非常に良好です。現在の習慣を維持してください。")
 
+    return summary_future, summary_past
+
+# --- メイン処理 ---
+if submitted:
+    # スコア計算
+    q_scores = [
+        option_values[q1_score], option_values[q2_score], option_values[q3_score],
+        option_values[q4_score], option_values[q5_score], option_values[q6_score],
+        option_values[q7_score], option_values[q8_score], option_values[q9_score],
+        option_values[q10_score], option_values[q11_score], option_values[q12_score],
+        option_values[q13_score], option_values[q14_score], option_values[q15_score],
+        option_values[q16_score], option_values[q17_score], option_values[q18_score],
+        option_values[q19_score], option_values[q20_score]
+    ]
+    
+    s_exp_int = sum(q_scores[0:5])
+    s_exp_qty = sum(q_scores[5:10])
+    s_rec_acc = sum(q_scores[10:15])
+    s_rec_pos = sum(q_scores[15:20])
+    
+    # --- データ保存（同意した場合のみ） ---
+    if data_consent:
+        user_data = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "nickname": user_nickname if user_nickname else "",
+            "grade": user_grade if user_grade != "回答しない" else "",
+            "s_exp_int": s_exp_int,
+            "s_exp_qty": s_exp_qty,
+            "s_rec_acc": s_rec_acc,
+            "s_rec_pos": s_rec_pos
+        }
+        
+        save_success = save_response(user_data)
+        if save_success:
+            st.success("✅ 回答が保存されました。ご協力ありがとうございます。")
+    
     st.markdown("---")
-    st.caption("Developed for Dirbato Co., Ltd.")
+    st.header("Analysis Result")
+    
+    # 結果表示
+    display_results(s_exp_int, s_exp_qty, s_rec_acc, s_rec_pos, 
+                   is_restored=False, show_comparison=data_consent)
+
+elif show_restored_results:
+    # URLから復元された結果を表示
+    st.markdown("---")
+    st.header("Analysis Result (保存された結果)")
+    
+    display_results(
+        restored_scores['s_exp_int'],
+        restored_scores['s_exp_qty'],
+        restored_scores['s_rec_acc'],
+        restored_scores['s_rec_pos'],
+        is_restored=True,
+        show_comparison=True  # 復元時は比較表示可能
+    )
+
+st.markdown("---")
+st.caption("Developed for Dirbato Co., Ltd.")
