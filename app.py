@@ -145,12 +145,11 @@ def save_response(user_data: dict):
         
         existing_data = ws.get_all_values()
         if not existing_data:
-            headers = ["timestamp", "nickname", "grade", "s_exp_int", "s_exp_qty", "s_rec_acc", "s_rec_pos"]
+            headers = ["timestamp", "grade", "s_exp_int", "s_exp_qty", "s_rec_acc", "s_rec_pos"]
             ws.append_row(headers)
         
         row = [
             user_data.get("timestamp", ""),
-            user_data.get("nickname", ""),
             user_data.get("grade", ""),
             user_data.get("s_exp_int", 0),
             user_data.get("s_exp_qty", 0),
@@ -438,11 +437,7 @@ with st.form("diagnosis_form"):
     st.markdown("---")
     st.header("オプション設定")
     
-    col_opt1, col_opt2 = st.columns(2)
-    with col_opt1:
-        user_nickname = st.text_input("ニックネーム（任意）", placeholder="例：タナカ", help="結果の識別用です。空欄でも構いません。")
-    with col_opt2:
-        user_grade = st.selectbox("職位（任意）", grades, help="匿名での傾向分析に使用します。")
+    user_grade = st.selectbox("職位（任意）", grades, help="匿名での傾向分析に使用します。")
     
     data_consent = st.checkbox(
         "回答結果を匿名で蓄積し、全体傾向の比較表示に使用することに同意します",
@@ -1181,7 +1176,6 @@ if submitted:
     if data_consent:
         user_data = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "nickname": user_nickname if user_nickname else "",
             "grade": user_grade if user_grade != "回答しない" else "",
             "s_exp_int": s_exp_int,
             "s_exp_qty": s_exp_qty,
